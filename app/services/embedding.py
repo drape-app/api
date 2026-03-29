@@ -1,6 +1,3 @@
-from transformers import AutoProcessor, AutoModel
-import torch
-import numpy as np
 from PIL import Image
 import io
 
@@ -11,12 +8,14 @@ _model = None
 def _load_model():
     global _processor, _model
     if _processor is None:
+        from transformers import AutoProcessor, AutoModel  # lazy import — heavy dep
         _processor = AutoProcessor.from_pretrained("Marqo/marqo-fashionSigLIP")
         _model = AutoModel.from_pretrained("Marqo/marqo-fashionSigLIP").eval()
 
 
 def generate_embedding(image_bytes: bytes) -> list[float]:
     """Generate a 512-dim L2-normalised fashion embedding."""
+    import torch  # lazy import — heavy dep
     _load_model()
     image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     inputs = _processor(images=image, return_tensors="pt", padding=True)
