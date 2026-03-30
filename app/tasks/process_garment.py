@@ -24,6 +24,25 @@ dramatiq.set_broker(broker)
 cloudinary.config(cloudinary_url=os.environ["CLOUDINARY_URL"])
 
 
+def _bbox_area(bbox: list[float]) -> float:
+    """Return normalized area from [cx, cy, w, h] bounding box."""
+    return bbox[2] * bbox[3]
+
+
+def pick_best_mask(segments: list[dict]) -> dict:
+    """Select the best clothing mask scored by confidence × bounding-box area.
+
+    Prefers large, confident regions over tiny high-confidence artefacts
+    (e.g. a button with score 0.99 loses to a shirt with 0.85 over a large area).
+
+    Raises ValueError when no segments are detected so the caller can mark
+    the garment as FAILED rather than silently falling back to the raw image.
+    """
+    if not segments:
+        raise ValueError("No clothing detected in image")
+    return max(segments, key=lambda s: s["confidence"] * _bbox_area(s["bbox"]))
+
+
 def _apply_mask_and_crop(original_bytes: bytes, mask_png: bytes, bbox: list[float]) -> bytes:
     """Composite mask over original, crop to bounding box, return PNG bytes."""
     original = Image.open(io.BytesIO(original_bytes)).convert("RGBA")
@@ -106,22 +125,17 @@ def process_garment(
         segments: list[dict] = segment_garments.remote(original_bytes, mask_hints)
         loop.run_until_complete(update_garment_status(garment_id, "PROCESSING", progress_pct=40))
 
-        # --- Step 4: Pick best segment (highest confidence) ---
-        if not segments:
-            # Fall back to the full original image if no segments detected
-            best_segment_bytes = original_bytes
-            segmented_image_url = image_url
-        else:
-            best_seg = max(segments, key=lambda s: s["confidence"])
-            best_segment_bytes = _apply_mask_and_crop(
-                original_bytes, best_seg["mask_png"], best_seg["bbox"]
-            )
-            folder = f"drape/{user_id}/segmented"
-            segmented_image_url = _upload_to_cloudinary(
-                best_segment_bytes,
-                public_id=f"{garment_id}_segmented",
-                folder=folder,
-            )
+        # --- Step 4: Pick best segment ---
+        best_seg = pick_best_mask(segments)   # raises ValueError → caught below → FAILED
+        best_segment_bytes = _apply_mask_and_crop(
+            original_bytes, best_seg["mask_png"], best_seg["bbox"]
+        )
+        folder = f"drape/{user_id}/segmented"
+        segmented_image_url = _upload_to_cloudinary(
+            best_segment_bytes,
+            public_id=f"{garment_id}_segmented",
+            folder=folder,
+        )
         loop.run_until_complete(update_garment_status(garment_id, "PROCESSING", progress_pct=55))
 
         # --- Step 5: Extract metadata via Gemini ---
