@@ -8,7 +8,7 @@ app = modal.App("wardrobe-segmentation")
         "groundingdino-py", "sam2", "pillow", "torch", "torchvision"
     ),
     timeout=120,
-    container_idle_timeout=60,
+    scaledown_window=60,
 )
 def segment_garments(image_bytes: bytes, mask_hints: list[str] | None = None) -> list[dict]:
     import torch

@@ -23,8 +23,32 @@ from app.services.embedding import generate_embedding
 import cloudinary.uploader
 import asyncio
 import json
+import io
+from PIL import Image
 
 router = APIRouter(prefix="/v1/garments", tags=["garments"])
+
+_CLOUDINARY_MAX_BYTES = 9 * 1024 * 1024  # stay under the 10 MB free-tier limit
+
+
+def _compress_for_upload(image_bytes: bytes) -> bytes:
+    """Resize + re-encode image to JPEG until it fits under Cloudinary's 10 MB limit."""
+    if len(image_bytes) <= _CLOUDINARY_MAX_BYTES:
+        return image_bytes
+    image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    quality = 85
+    while quality >= 30:
+        buf = io.BytesIO()
+        image.save(buf, format="JPEG", quality=quality)
+        data = buf.getvalue()
+        if len(data) <= _CLOUDINARY_MAX_BYTES:
+            return data
+        w, h = image.size
+        image = image.resize((int(w * 0.85), int(h * 0.85)), Image.LANCZOS)
+        quality -= 10
+    buf = io.BytesIO()
+    image.save(buf, format="JPEG", quality=30)
+    return buf.getvalue()
 
 
 @router.post("/upload", response_model=GarmentUploadResponse, status_code=status.HTTP_202_ACCEPTED)
@@ -40,6 +64,9 @@ async def upload_garment(
     image_bytes = await image.read()
     if not image_bytes:
         raise HTTPException(status_code=400, detail="Empty image file")
+
+    # Compress to stay under Cloudinary's 10 MB free-tier limit
+    image_bytes = _compress_for_upload(image_bytes)
 
     # Upload original to Cloudinary to get a stable URL
     upload_result = cloudinary.uploader.upload(
@@ -151,6 +178,9 @@ async def detect_all_garments(
     image_bytes = await image.read()
     if not image_bytes:
         raise HTTPException(status_code=400, detail="Empty image file")
+
+    # Compress to stay under Cloudinary's 10 MB free-tier limit
+    image_bytes = _compress_for_upload(image_bytes)
 
     # Upload original to Cloudinary
     upload_result = cloudinary.uploader.upload(
