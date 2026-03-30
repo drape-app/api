@@ -10,7 +10,7 @@ dependencies = [
     "fastapi==0.115.6",
     "uvicorn[standard]==0.34.0",
     "dramatiq[redis]==1.17.0",
-    "supabase==2.10.0",
+    "supabase==2.15.2",
     "cloudinary==1.41.0",
     "google-generativeai==0.8.3",
     "modal==0.73.0",
@@ -32,6 +32,9 @@ dev = [
     "httpx==0.28.1",
     "respx==0.22.0",
 ]
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
