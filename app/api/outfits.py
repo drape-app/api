@@ -98,25 +98,24 @@ async def delete_outfit(
     client.table("outfits").delete().eq("id", outfit_id).execute()
 
 
-@router.post("/{outfit_id}/composite", response_model=OutfitResponse)
+class CompositeRequest(BaseModel):
+    garment_ids: list[str]
+
+
+@router.post("/{outfit_id}/composite")
 async def generate_composite(
     outfit_id: str,
+    body: CompositeRequest,
     current_user: dict = Depends(get_current_user),
 ):
-    """Generate a collage thumbnail from the outfit's garment thumbnails."""
+    """Generate a collage thumbnail from the provided garment thumbnails."""
     client = get_supabase_client()
-    outfit_result = client.table("outfits").select("*").eq("id", outfit_id).maybe_single().execute()
-    if not outfit_result.data:
-        raise HTTPException(status_code=404, detail="Outfit not found")
-    outfit = outfit_result.data
-    if outfit["user_id"] != current_user["user_id"]:
-        raise HTTPException(status_code=403, detail="Forbidden")
 
-    # Fetch thumbnail URLs for each garment in the outfit
+    # Fetch thumbnail URLs for each garment supplied by the client
     garment_result = (
         client.table("garments")
         .select("thumbnail_url")
-        .in_("id", outfit["garment_ids"])
+        .in_("id", body.garment_ids)
         .execute()
     )
     thumb_urls = [r["thumbnail_url"] for r in (garment_result.data or []) if r.get("thumbnail_url")]
@@ -131,10 +130,7 @@ async def generate_composite(
     )
     thumbnail_url: str = upload_result["secure_url"]
 
-    update_result = (
-        client.table("outfits")
-        .update({"thumbnail_url": thumbnail_url})
-        .eq("id", outfit_id)
-        .execute()
-    )
-    return OutfitResponse(**update_result.data[0])
+    # Best-effort update if the outfit exists on the backend
+    client.table("outfits").update({"thumbnail_url": thumbnail_url}).eq("id", outfit_id).execute()
+
+    return {"thumbnail_url": thumbnail_url}
