@@ -8,7 +8,10 @@ import io
 import asyncio
 from PIL import Image
 
-from app.services.segmentation import segment_garments
+import modal
+
+# Look up the deployed Modal function by name so this works outside Modal's runtime.
+_segment_garments = modal.Function.from_name("wardrobe-segmentation", "segment_garments")
 from app.services.metadata import extract_metadata
 from app.services.embedding import generate_embedding
 from app.db.supabase_client import (
@@ -122,7 +125,7 @@ def process_garment(
         loop.run_until_complete(update_garment_status(garment_id, "PROCESSING", progress_pct=15))
 
         # --- Step 3: Cloud segmentation via Modal ---
-        segments: list[dict] = segment_garments.remote(original_bytes, mask_hints)
+        segments: list[dict] = _segment_garments.remote(original_bytes, mask_hints)
         loop.run_until_complete(update_garment_status(garment_id, "PROCESSING", progress_pct=40))
 
         # --- Step 4: Pick best segment ---

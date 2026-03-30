@@ -17,14 +17,17 @@ from app.models.garment import (
     DetectAllResponse,
     ConfirmBatchRequest,
 )
-from app.services.segmentation import segment_garments
 from app.services.metadata import extract_metadata
 from app.services.embedding import generate_embedding
 import cloudinary.uploader
 import asyncio
 import json
 import io
+import modal
 from PIL import Image
+
+# Look up the deployed Modal function by name so this works outside Modal's runtime.
+_segment_garments = modal.Function.from_name("wardrobe-segmentation", "segment_garments")
 
 router = APIRouter(prefix="/v1/garments", tags=["garments"])
 
@@ -192,7 +195,7 @@ async def detect_all_garments(
 
     # Run cloud segmentation (blocking Modal call — run in thread)
     segments: list[dict] = await asyncio.to_thread(
-        segment_garments.remote, image_bytes
+        _segment_garments.remote, image_bytes
     )
 
     client = get_supabase_client()
