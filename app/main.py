@@ -1,6 +1,9 @@
+import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
+logging.basicConfig(level=logging.DEBUG, format="%(levelname)s %(name)s: %(message)s")
 
 from app.api.garments import router as garments_router
 from app.api.wardrobe import router as wardrobe_router

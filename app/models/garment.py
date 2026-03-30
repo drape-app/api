@@ -77,3 +77,16 @@ class OutfitSuggestionRequest(BaseModel):
 class OutfitSuggestionResponse(BaseModel):
     garment_ids: list[str]
     explanation: str
+
+class DetectedItem(BaseModel):
+    garment_id: str
+    thumbnail_url: str
+    category: str
+    confidence: float
+    colors: list
+
+class DetectAllResponse(BaseModel):
+    items: list[DetectedItem]
+
+class ConfirmBatchRequest(BaseModel):
+    selected_ids: list[str]

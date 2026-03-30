@@ -8,6 +8,8 @@ services:
       - "8000:8000"
     env_file:
       - .env
+    volumes:
+      - ${HOME}/.cache/huggingface:/root/.cache/huggingface
     depends_on:
       redis:
         condition: service_healthy
@@ -19,6 +21,8 @@ services:
     command: ["dramatiq", "app.tasks.process_garment", "--processes", "2", "--threads", "4"]
     env_file:
       - .env
+    volumes:
+      - ${HOME}/.cache/huggingface:/root/.cache/huggingface
     depends_on:
       redis:
         condition: service_healthy

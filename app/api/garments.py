@@ -1,15 +1,27 @@
 from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException, status
 from app.middleware.auth import get_current_user
-from app.db.supabase_client import get_supabase_client, delete_garment, get_garment
-from app.tasks.process_garment import process_garment
+from app.db.supabase_client import get_supabase_client, delete_garment, get_garment, update_garment_status
+from app.tasks.process_garment import (
+    process_garment,
+    _apply_mask_and_crop,
+    _generate_thumbnail,
+    _upload_to_cloudinary,
+)
 from app.models.garment import (
     GarmentUploadResponse,
     GarmentStatusResponse,
     SimilarRequest,
     SimilarResponse,
     SimilarItem,
+    DetectedItem,
+    DetectAllResponse,
+    ConfirmBatchRequest,
 )
+from app.services.segmentation import segment_garments
+from app.services.metadata import extract_metadata
+from app.services.embedding import generate_embedding
 import cloudinary.uploader
+import asyncio
 import json
 
 router = APIRouter(prefix="/v1/garments", tags=["garments"])
@@ -120,3 +132,145 @@ async def remove_garment(
             pass
 
     await delete_garment(garment_id)
+
+
+@router.post("/detect-all", response_model=DetectAllResponse)
+async def detect_all_garments(
+    image: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Upload a photo, run full multi-item detection (Modal SAM2 + GroundingDINO),
+    and persist one DETECTED garment row per detected segment.
+
+    Returns thumbnail URL + metadata for each detected item so the client can
+    present a selection UI before confirming.
+    """
+    user_id = current_user["user_id"]
+
+    image_bytes = await image.read()
+    if not image_bytes:
+        raise HTTPException(status_code=400, detail="Empty image file")
+
+    # Upload original to Cloudinary
+    upload_result = cloudinary.uploader.upload(
+        image_bytes,
+        folder=f"drape/{user_id}/originals",
+        resource_type="image",
+    )
+    original_url: str = upload_result["secure_url"]
+
+    # Run cloud segmentation (blocking Modal call — run in thread)
+    segments: list[dict] = await asyncio.to_thread(
+        segment_garments.remote, image_bytes
+    )
+
+    client = get_supabase_client()
+    detected_items: list[DetectedItem] = []
+
+    for seg in segments:
+        try:
+            # Crop + mask this segment
+            seg_bytes = _apply_mask_and_crop(image_bytes, seg["mask_png"], seg["bbox"])
+
+            # Extract metadata (async)
+            metadata: dict = await extract_metadata(seg_bytes)
+
+            # Generate embedding (sync — run in thread)
+            embedding: list[float] = await asyncio.to_thread(generate_embedding, seg_bytes)
+
+            # Thumbnail
+            thumb_bytes = _generate_thumbnail(seg_bytes)
+
+            # Insert DETECTED garment row first to get an ID
+            insert_result = (
+                client.table("garments")
+                .insert(
+                    {
+                        "user_id": user_id,
+                        "category": metadata.get("category", "unknown"),
+                        "original_image_url": original_url,
+                        "sync_status": "DETECTED",
+                    }
+                )
+                .execute()
+            )
+            garment_id: str = insert_result.data[0]["id"]
+
+            # Upload segmented image + thumbnail to Cloudinary
+            segmented_url = _upload_to_cloudinary(
+                seg_bytes,
+                public_id=f"{garment_id}_segmented",
+                folder=f"drape/{user_id}/segmented",
+            )
+            thumbnail_url = _upload_to_cloudinary(
+                thumb_bytes,
+                public_id=f"{garment_id}_thumb",
+                folder=f"drape/{user_id}/thumbnails",
+            )
+
+            # Update row with full metadata
+            colors = metadata.get("colors", [])
+            client.table("garments").update(
+                {
+                    "subcategory": metadata.get("subcategory"),
+                    "colors": colors,
+                    "pattern": metadata.get("pattern"),
+                    "fabric": metadata.get("fabric"),
+                    "brand": metadata.get("brand"),
+                    "season": metadata.get("season", []),
+                    "occasions": metadata.get("occasions", []),
+                    "care_instructions": metadata.get("care_instructions"),
+                    "style_tags": metadata.get("style_tags", []),
+                    "formality_score": metadata.get("formality_score"),
+                    "segmented_image_url": segmented_url,
+                    "thumbnail_url": thumbnail_url,
+                    "embedding": embedding,
+                    "updated_at": "now()",
+                }
+            ).eq("id", garment_id).execute()
+
+            detected_items.append(
+                DetectedItem(
+                    garment_id=garment_id,
+                    thumbnail_url=thumbnail_url,
+                    category=metadata.get("category", "unknown"),
+                    confidence=seg["confidence"],
+                    colors=colors,
+                )
+            )
+        except Exception:
+            # Skip individual segment failures — don't fail the whole request
+            continue
+
+    return DetectAllResponse(items=detected_items)
+
+
+@router.post("/confirm-batch")
+async def confirm_batch(
+    request: ConfirmBatchRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Mark selected DETECTED garments as SYNCED and delete the rest.
+    Called after the user confirms which items to add to their wardrobe.
+    """
+    user_id = current_user["user_id"]
+    client = get_supabase_client()
+
+    # Mark selected garments as SYNCED
+    for gid in request.selected_ids:
+        await update_garment_status(gid, "SYNCED")
+
+    # Delete remaining DETECTED garments for this user that were not selected
+    excluded = request.selected_ids if request.selected_ids else ["__none__"]
+    (
+        client.table("garments")
+        .delete()
+        .eq("user_id", user_id)
+        .eq("sync_status", "DETECTED")
+        .not_.in_("id", excluded)
+        .execute()
+    )
+
+    return {"ok": True}

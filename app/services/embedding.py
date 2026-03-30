@@ -9,8 +9,8 @@ def _load_model():
     global _processor, _model
     if _processor is None:
         from transformers import AutoProcessor, AutoModel  # lazy import — heavy dep
-        _processor = AutoProcessor.from_pretrained("Marqo/marqo-fashionSigLIP")
-        _model = AutoModel.from_pretrained("Marqo/marqo-fashionSigLIP").eval()
+        _processor = AutoProcessor.from_pretrained("Marqo/marqo-fashionSigLIP", trust_remote_code=True)
+        _model = AutoModel.from_pretrained("Marqo/marqo-fashionSigLIP", trust_remote_code=True).eval()
 
 
 def generate_embedding(image_bytes: bytes) -> list[float]:
